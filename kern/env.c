@@ -267,6 +267,13 @@ int env_alloc(struct Env **new, u_int parent_id) {
 	// Reserve space for 'argc' and 'argv'.
 	e->env_tf.regs[29] = USTACKTOP - sizeof(int) - sizeof(char **);
 
+	// sigaction
+	for (u_int i = 1; i <= 32; i++) {
+		e->env_sigaction[i].sa_handler = 0;	
+	}
+	e->env_sig_recv = 0;
+	e->env_sig_entry = 0;
+
 	/* Step 5: Remove the new Env from env_free_list. */
 	/* Exercise 3.4: Your code here. (4/4) */
 	LIST_REMOVE(e,env_link);
@@ -380,6 +387,13 @@ void env_free(struct Env *e) {
 
 	/* Hint: Note the environment's demise.*/
 	printk("[%08x] free env %08x\n", curenv ? curenv->env_id : 0, e->env_id);
+	
+	//sigaction
+	if (e->env_parent_id) {
+		struct Env *parent;
+		envid2env(e->env_parent_id, &parent, 0);
+		parent->env_sig_recv |= 1 << (17 - 1); // SIGCHLD
+	}
 
 	/* Hint: Flush all mapped pages in the user portion of the address space */
 	for (pdeno = 0; pdeno < PDX(UTOP); pdeno++) {
@@ -480,7 +494,8 @@ void env_run(struct Env *e) {
 	 *    returning to the kernel caller, making 'env_run' a 'noreturn' function as well.
 	 */
 	/* Exercise 3.8: Your code here. (2/2) */
-	env_pop_tf(&curenv->env_tf,curenv->env_asid);
+	struct Trapframe tmp_tf = curenv->env_tf;
+	env_pop_tf(&tmp_tf, curenv->env_asid);
 }
 
 void env_check() {

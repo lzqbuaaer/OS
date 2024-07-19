@@ -7,6 +7,7 @@
 #include <pmap.h>
 #include <syscall.h>
 #include <trap.h>
+#include <signal.h>
 
 #define vpt ((const volatile Pte *)UVPT)
 #define vpd ((const volatile Pde *)(UVPT + (PDX(UVPT) << PGSHIFT)))
@@ -136,5 +137,28 @@ int sync(void);
 // Unimplemented open modes
 #define O_EXCL 0x0400  /* error if already exists */
 #define O_MKDIR 0x0800 /* create directory, not regular file */
+
+// signal.c
+#define SIGSET(x) (1 << (x-1))
+int sigaction(int signum, const struct sigaction *newact, struct sigaction *oldact);
+int kill(u_int envid, int sig);
+int sigemptyset(sigset_t *__set);
+int sigfillset(sigset_t *__set);
+int sigaddset(sigset_t *__set, int __signo);
+int sigdelset(sigset_t *__set, int __signo);
+int sigismember(const sigset_t *__set, int __signo);
+int sigisemptyset(const sigset_t *__set);
+int sigandset(sigset_t *__set, const sigset_t *__left, const sigset_t *__right);
+int sigorset(sigset_t *__set, const sigset_t *__left, const sigset_t *__right);
+int sigprocmask(int __how, const sigset_t * __set, sigset_t * __oset);
+int sigpending(sigset_t *__set);
+int syscall_get_sig_act(u_int envid, int signum, struct sigaction *oldact);
+int syscall_set_sig_act(u_int envid, int signum, struct sigaction *act);
+int syscall_kill(u_int envid, int sig);
+int syscall_sigprocmask(u_int envid, int __how, const sigset_t * __set, sigset_t * __oset);
+int syscall_sigpending(u_int envid, sigset_t * __set);
+int syscall_set_sig_trapframe(u_int envid, struct Trapframe *tf);
+int syscall_set_sig_entry(u_int envid, void (*func)(struct Trapframe *, int));
+int set_sig_entry();
 
 #endif

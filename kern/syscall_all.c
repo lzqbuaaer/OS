@@ -251,6 +251,14 @@ int sys_exofork(void) {
 	e->env_status = ENV_NOT_RUNNABLE;
 	e->env_pri = curenv->env_pri;
 	
+	//sigaction
+	for (u_int i = 1; i <= 32; i++) {
+		e->env_sigaction[i] = curenv->env_sigaction[i];
+	}
+	e->env_sig_entry = curenv->env_sig_entry;
+	e->env_sa_mask = curenv->env_sa_mask;
+	e->env_sig_recv = 0;
+
 	return e->env_id;
 }
 
@@ -499,6 +507,102 @@ int sys_read_dev(u_int va, u_int pa, u_int len) {
 	return 0;
 }
 
+int sys_get_sig_act(u_int envid, int signum, struct sigaction *oldact) {
+	struct Env *env;
+	if (envid2env(envid, &env, 0) < 0) {
+		return -1;
+	}
+	if (oldact != NULL) {
+		oldact->sa_handler = env->env_sigaction[signum].sa_handler;
+		oldact->sa_mask = env->env_sigaction[signum].sa_mask;
+	}
+	return 0;
+}
+
+int sys_set_sig_act(u_int envid, int signum, struct sigaction *act) {
+	struct Env *env;
+	if (envid2env(envid, &env, 0) < 0) {
+		return -1;
+	}
+	if (act == NULL) {
+		return -1;
+	}
+	env->env_sigaction[signum].sa_handler = act->sa_handler;
+	env->env_sigaction[signum].sa_mask = act->sa_mask;
+	return 0;
+}
+
+int sys_kill(u_int envid, int sig) {
+	//printk("sys_kill start: signum=%d\n", sig);
+	if (sig < 1 || sig > 32) {
+		return -1;
+	}
+	struct Env *env;
+	if (envid2env(envid, &env, 0) < 0) {
+		return -1;
+	}
+	env->env_sig_recv |= (1 << (sig - 1));
+	return 0;
+	//printk("sys_kill end\n");
+}
+
+int sys_sigprocmask(u_int envid, int how, const sigset_t *set, sigset_t *oset) {
+	struct Env *env;
+	if (envid2env(envid, &env, 0) < 0) {
+		return -1;
+	}
+	if (oset != NULL) {
+		oset->sig = env->env_sa_mask.sig;
+	}
+	if (set == NULL) {
+		return -1;
+	}
+	if (how == SIG_BLOCK) {
+		env->env_sa_mask.sig |= set->sig;
+	} else if (how == SIG_UNBLOCK) {
+		env->env_sa_mask.sig &= (~set->sig);
+	} else if (how == SIG_SETMASK) {
+		env->env_sa_mask.sig = set->sig;
+	} else {
+		return -1;
+	}
+	return 0;
+}
+
+int sys_sigpending(u_int envid, sigset_t *set) {
+	struct Env *env;
+	if (envid2env(envid, &env, 0) < 0) {
+		return -1;
+	}
+	if (set == NULL) {
+		return -1;
+	}
+	set->sig = env->env_sa_mask.sig & env->env_sig_recv & ~(1 << 8);
+}
+
+int sys_set_sig_trapframe(u_int envid, struct Trapframe *tf) {
+	if (is_illegal_va_range((u_long)tf, sizeof *tf)) {
+		return -E_INVAL;
+	}
+	struct Env *env;
+	try(envid2env(envid, &env, 1));
+	if (env == curenv) {
+		*((struct Trapframe *)KSTACKTOP - 1) = *tf;
+		return tf->regs[2];
+	} else {
+		env->env_tf = *tf;
+		return 0;
+	}
+
+}
+
+int sys_set_sig_entry(u_int envid, u_int func) {
+	struct Env *env;
+	try(envid2env(envid, &env, 1));
+	env->env_sig_entry = func;
+	return 0;
+}
+
 void *syscall_table[MAX_SYSNO] = {
     [SYS_putchar] = sys_putchar,
     [SYS_print_cons] = sys_print_cons,
@@ -518,6 +622,13 @@ void *syscall_table[MAX_SYSNO] = {
     [SYS_cgetc] = sys_cgetc,
     [SYS_write_dev] = sys_write_dev,
     [SYS_read_dev] = sys_read_dev,
+	[SYS_get_sig_act] = sys_get_sig_act,
+	[SYS_set_sig_act] = sys_set_sig_act,
+	[SYS_kill] = sys_kill,
+	[SYS_sigprocmask] = sys_sigprocmask,
+	[SYS_sigpending] = sys_sigpending,
+	[SYS_set_sig_trapframe] = sys_set_sig_trapframe,
+	[SYS_set_sig_entry] = sys_set_sig_entry,
 };
 
 /* Overview:
@@ -533,14 +644,17 @@ void *syscall_table[MAX_SYSNO] = {
 void do_syscall(struct Trapframe *tf) {
 	int (*func)(u_int, u_int, u_int, u_int, u_int);
 	int sysno = tf->regs[4];
-	if (sysno < 0 || sysno >= MAX_SYSNO) {
-		tf->regs[2] = -E_NO_SYS;
-		return;
-	}
 
 	/* Step 1: Add the EPC in 'tf' by a word (size of an instruction). */
 	/* Exercise 4.2: Your code here. (1/4) */
 	tf->cp0_epc += 4;
+
+	if (sysno < 0 || sysno >= MAX_SYSNO) {
+		tf->regs[2] = -E_NO_SYS;
+		curenv->env_sig_recv |= 1 << (31 - 1); // SIGSYS
+		schedule(-1);
+	}
+
 	/* Step 2: Use 'sysno' to get 'func' from 'syscall_table'. */
 	/* Exercise 4.2: Your code here. (2/4) */
 	func = syscall_table[sysno];

@@ -14,6 +14,13 @@ END(handle_\exception)
 .text
 
 FEXPORT(ret_from_exception)
+	# jump to do_signal
+	move    a0, sp
+	addiu   sp, sp, -24
+	jal     do_signal
+	nop
+	addiu   sp, sp, 24
+
 	RESTORE_ALL
 	eret
 
@@ -29,6 +36,7 @@ timer_irq:
 END(handle_int)
 
 BUILD_HANDLER tlb do_tlb_refill
+BUILD_HANDLER ri  do_send_sigill
 
 #if !defined(LAB) || LAB >= 4
 BUILD_HANDLER mod do_tlb_mod

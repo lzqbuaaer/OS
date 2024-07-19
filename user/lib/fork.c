@@ -144,3 +144,32 @@ int fork(void) {
 	try(syscall_set_env_status(child, ENV_RUNNABLE));
 	return child;
 }
+
+// sigaction
+static void __attribute__((noreturn)) sig_entry(struct Trapframe *tf, int signum) {
+	struct sigaction signal = env->env_sigaction[signum];
+	sigset_t set, oset;
+	set.sig = signal.sa_mask.sig | (1 << (signum - 1));
+	sigprocmask(SIG_BLOCK, &set, &oset);
+	//debugf("signum:%d\n", signum);
+	if (signum == SIGKILL) {
+		exit();
+	}
+	else if (signal.sa_handler != 0) {
+		signal.sa_handler(signum);
+	} else {
+		if (signum == SIGINT || signum == SIGILL || signum == SIGKILL || signum == SIGSEGV) {
+			exit();
+		}
+	}
+	sigprocmask(SIG_SETMASK, &oset, NULL);
+	int r = syscall_set_sig_trapframe(0, tf);
+	user_panic("syscall_set_sig_trapframe returned %d", r);
+}
+
+int set_sig_entry() {
+    try(syscall_set_sig_entry(0, sig_entry));
+    try(syscall_set_tlb_mod_entry(0, cow_entry));
+    return 0;
+}
+

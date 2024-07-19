@@ -19,7 +19,8 @@ static void passive_alloc(u_int va, Pde *pgdir, u_int asid) {
 	struct Page *p = NULL;
 
 	if (va < UTEMP) {
-		panic("address too low");
+		sys_kill(0, SIGSEGV);
+		//panic("address too low");
 	}
 
 	if (va >= USTACKTOP && va < USTACKTOP + PAGE_SIZE) {
@@ -98,3 +99,49 @@ void do_tlb_mod(struct Trapframe *tf) {
 	}
 }
 #endif
+
+// sigaction
+void do_signal(struct Trapframe *tf) {
+	//printk("do_signal start\n");
+	u_int sig_recv = curenv->env_sig_recv;
+	u_int signum = 0;
+	for(int i = 1; i <= 32; i++) {
+		if((sig_recv & 1 == 1) && (((1 << (i - 1)) & curenv->env_sa_mask.sig) == 0)) {
+			signum = i;
+			break;
+		}
+		sig_recv = sig_recv >> 1;
+	}
+	if (curenv->env_sig_recv & (1 << 8)) {
+		signum = 9;
+		curenv->env_sa_mask.sig = 0xffffffff;
+	}
+	if (signum == 0) {
+		return;
+	}
+	curenv->env_sig_recv &= (~(1 << (signum - 1)));
+	if (signum == 31 && !curenv->env_sigaction[signum].sa_handler) {
+		tf->cp0_epc += 4;
+	}
+
+	//printk("envid:%d\n", curenv->env_id);
+	//printk("sig_recv:%d\ncurenv->env_sa_mask.sig:%d\n", sig_recv, curenv->env_sa_mask.sig);
+	//printk("signum:%d\n", signum);
+
+	struct Trapframe tmp_tf = *tf;
+	if (tf->regs[29] < USTACKTOP || tf->regs[29] >= UXSTACKTOP) {
+		tf->regs[29] = UXSTACKTOP;
+	}
+	tf->regs[29] -= sizeof(struct Trapframe);
+	*(struct Trapframe *)tf->regs[29] = tmp_tf;
+
+	if (curenv->env_sig_entry) {
+		tf->regs[4] = tf->regs[29];
+		tf->regs[5] = signum;
+		tf->regs[29] -= sizeof(tf->regs[4]);
+		tf->regs[29] -= sizeof(tf->regs[5]);
+		tf->cp0_epc = curenv->env_sig_entry;
+	} else {
+		panic("sig but no user handler registered");
+	}
+}
