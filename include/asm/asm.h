@@ -38,4 +38,3 @@
 	.globl symbol;                                                                             \
 	.type symbol, @function;                                                                   \
 	symbol:
-

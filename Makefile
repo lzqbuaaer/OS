@@ -1,46 +1,101 @@
-ENDIAN         := EL
+include include.mk
 
-QEMU           := qemu-system-mipsel
-CROSS_COMPILE  := mips-linux-gnu-
-CC             := $(CROSS_COMPILE)gcc
-CFLAGS         += --std=gnu99 -$(ENDIAN) -G 0 -mno-abicalls -fno-pic \
-                  -ffreestanding -fno-stack-protector -fno-builtin \
-                  -Wa,-xgot -Wall -mxgot -mno-fix-r4000 -march=4kc -g -ggdb
-LD             := $(CROSS_COMPILE)ld
-LDFLAGS        += -$(ENDIAN) -G 0 -static -n -nostdlib --fatal-warnings
-INCLUDES       := -I./include
+lab                     ?= $(shell cat .mos-this-lab 2>/dev/null || echo 6)
 
-qemu_flags     += -cpu 4Kc -m 64 -nographic -M malta -no-reboot
+target_dir              := target
+mos_elf                 := $(target_dir)/mos
+user_disk               := $(target_dir)/fs.img
+empty_disk              := $(target_dir)/empty.img
+qemu_pts                := $(shell [ -f .qemu_log ] && grep -Eo '/dev/pts/[0-9]+' .qemu_log)
+link_script             := kernel.lds
 
-qemu_files     += $(target)
+modules                 := lib init kern
+targets                 := $(mos_elf)
 
-link_script    := linker.lds
-target         := runbin
+lab-ge = $(shell [ "$$(echo $(lab)_ | cut -f1 -d_)" -ge $(1) ] && echo true)
 
-objs           := blib.o machine.o start.o test.o
+ifeq ($(call lab-ge,3),true)
+	user_modules    += user/bare
+endif
 
-all: $(objs)
-	$(LD) $(LDFLAGS) -o $(target) -N -T $(link_script) $(objs)
+ifeq ($(call lab-ge,4),true)
+	user_modules    += user
+endif
 
-%.o: %.c
-	$(CC) $(CFLAGS) $(INCLUDES) -c $<
+ifeq ($(call lab-ge,5),true)
+	user_modules    += fs
+	targets         += fs-image
+endif
 
-%.o: %.S
-	$(CC) $(CFLAGS) $(INCLUDES) -c $<
+objects                 := $(addsuffix /*.o, $(modules)) $(addsuffix /*.x, $(user_modules))
+modules                 += $(user_modules)
 
-dbg_run: qemu_flags += -s -S
-dbg_run: run
+CFLAGS                  += -DLAB=$(shell echo $(lab) | cut -f1 -d_)
+QEMU_FLAGS              += -cpu 4Kc -m 64 -nographic -M malta \
+						$(shell [ -f '$(user_disk)' ] && echo '-drive id=ide0,file=$(user_disk),if=ide,format=raw') \
+						$(shell [ -f '$(empty_disk)' ] && echo '-drive id=ide1,file=$(empty_disk),if=ide,format=raw') \
+						-no-reboot
 
-dbg:
-	make dbg_run >/dev/null 2>&1 &
-	gdb-multiarch $(target) -ex "target remote localhost:1234"
-	killall $(QEMU)
+.PHONY: all test tools $(modules) clean run dbg_run dbg_pts dbg objdump fs-image clean-and-all connect
 
-run:
-	$(QEMU) $(qemu_flags) -kernel $(qemu_files)
+.ONESHELL:
+clean-and-all: clean
+	$(MAKE) all
+
+test: export test_dir = tests/lab$(lab)
+test: clean-and-all
+
+include mk/tests.mk mk/profiles.mk
+export CC CFLAGS LD LDFLAGS lab
+
+all: $(targets)
+
+$(target_dir):
+	mkdir -p $@
+
+tools:
+	CC="$(HOST_CC)" CFLAGS="$(HOST_CFLAGS)" $(MAKE) --directory=$@
+
+$(modules): tools
+	$(MAKE) --directory=$@
+
+$(mos_elf): $(modules) $(target_dir)
+	$(LD) $(LDFLAGS) -o $(mos_elf) -N -T $(link_script) $(objects)
+
+fs-image: $(target_dir) user
+	$(MAKE) --directory=fs image fs-files="$(addprefix ../, $(fs-files))"
+
+fs: user
+user: lib
 
 clean:
-	rm -f *.o $(target)
+	for d in * tools/readelf user/* tests/*; do
+		if [ -f $$d/Makefile ]; then
+			$(MAKE) --directory=$$d clean
+		fi
+	done
+	rm -rf *.o *~ $(target_dir) include/generated
+	find . -name '*.objdump' -exec rm {} ';'
 
-.PHONY: all clean run
+run:
+	$(QEMU) $(QEMU_FLAGS) -kernel $(mos_elf)
 
+dbg_run:
+	$(QEMU) $(QEMU_FLAGS) -kernel $(mos_elf) -s -S
+
+dbg:
+	export QEMU="$(QEMU)"
+	export QEMU_FLAGS="$(QEMU_FLAGS)"
+	export mos_elf="$(mos_elf)"
+	setsid ./tools/run_bg.sh $$$$ &
+	exec gdb-multiarch -q $(mos_elf) -ex "target remote localhost:1234"
+
+dbg_pts: QEMU_FLAGS += -serial "pty"
+dbg_pts: dbg
+
+connect:
+	[ -f .qemu_log ] && screen -R mos $(qemu_pts)
+
+objdump:
+	@find * \( -name '*.b' -o -path $(mos_elf) \) -exec sh -c \
+	'$(CROSS_COMPILE)objdump {} -aldS > {}.objdump && echo {}.objdump' ';'
